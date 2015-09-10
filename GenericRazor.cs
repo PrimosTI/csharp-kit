@@ -56,9 +56,9 @@ You must understand and agree to the above terms before using this work.
     =====================================
     GenericRazor para .Net
     =====================================
-    Versão:      0.0.1
+    Versão:      0.0.2
     Criação:     2015-08-23
-    Alteração:   2015-08-23
+    Alteração:   2015-09-10
     
     Escrito por: Rodrigo Speller
     E-mail:      rspeller@primosti.com.br
@@ -70,6 +70,10 @@ captura da saída.
 
 Alterações
 ----------
+» 0.0.2
+- Passagem de argumentos para o Template.
+- Implementação dos métodos WriteAttribute e WriteToAttribute no Template.
+
 » 0.0.1
 - Lançamento para testes.
 
@@ -164,27 +168,27 @@ namespace GenericRazor
 
             // namespaces precarregadas
             NamespaceImports = new List<string>() { 
-				"System",
-				"System.Collections.Generic",
-				"System.IO",
-				"System.Linq"
-				/* ,
-				"System.Net",
-				"System.Web",
-				"System.Web.Helpers",
-				"System.Web.Security",
-				"System.Web.UI",
-				"System.Web.WebPages",
-				"System.Web.WebPages.Html"
-				 */
+                "System",
+                "System.Collections.Generic",
+                "System.IO",
+                "System.Linq"
+                /* ,
+                "System.Net",
+                "System.Web",
+                "System.Web.Helpers",
+                "System.Web.Security",
+                "System.Web.UI",
+                "System.Web.WebPages",
+                "System.Web.WebPages.Html"
+                 */
             };
 
             // assemblies precarregadas
             ReferencedAssemblies = new List<string>() {
-				"System.dll",
-				"System.Core.dll",
-				"Microsoft.CSharp.dll"
-			};
+                "System.dll",
+                "System.Core.dll",
+                "Microsoft.CSharp.dll"
+            };
         }
 
         protected RAZOR_TEMPLATE_ENGINE CreateRazorTemplateEngine()
@@ -442,10 +446,15 @@ namespace GenericRazor
 
         public void Run(ITemplateKey key, TextWriter output)
         {
+            this.Run(key, output, null);
+        }
+
+        protected void Run(ITemplateKey key, TextWriter output, params object[] args)
+        {
             if (key == null)
                 return;
 
-            using (TTemplate template = CreateTemplate(key))
+            using (TTemplate template = CreateTemplate(key, args))
             {
                 template.writer = output;
 
@@ -497,7 +506,7 @@ namespace GenericRazor
             return key;
         }
 
-        private TTemplate CreateTemplate(ITemplateKey key)
+        private TTemplate CreateTemplate(ITemplateKey key, params object[] args)
         {
             Type templateType = null;
 
@@ -507,7 +516,7 @@ namespace GenericRazor
             TTemplate template = null;
             try
             {
-                template = Activator.CreateInstance(templateType) as TTemplate;
+                template = (TTemplate)Activator.CreateInstance(templateType);
             }
             catch (Exception ex)
             {
@@ -529,12 +538,12 @@ namespace GenericRazor
                     null
                 );
 
-            OnCreateTemplate(template);
+            OnCreateTemplate(template, args);
 
             return template;
         }
 
-        protected virtual void OnCreateTemplate(TTemplate template) { }
+        protected virtual void OnCreateTemplate(TTemplate template, params object[] args) { }
 
         private void ExecuteTemplate(TTemplate template)
         {
@@ -588,6 +597,110 @@ namespace GenericRazor
         private string tempPath = null;
     }
 
+    [System.Diagnostics.DebuggerDisplay("({Position})\"{Value}\"")]
+    public class PositionTagged<T>
+    {
+        public int Position { get; private set; }
+
+        public T Value { get; private set; }
+
+        private PositionTagged() { this.Position = 0; this.Value = default(T); }
+
+        public PositionTagged(T value, int offset)
+        {
+            this.Position = offset;
+            this.Value = value;
+        }
+
+        public override bool Equals(object obj)
+        {
+            PositionTagged<T> positionTagged = obj as PositionTagged<T>;
+            return positionTagged != null && positionTagged.Position == this.Position && object.Equals(positionTagged.Value, this.Value);
+        }
+
+        public override int GetHashCode()
+        {
+            return this.Value == null ? 0 : this.Value.GetHashCode();
+        }
+
+        public override string ToString()
+        {
+            T value = this.Value;
+            return value.ToString();
+        }
+
+        public static implicit operator T(PositionTagged<T> value)
+        {
+            return value.Value;
+        }
+
+        public static implicit operator PositionTagged<T>(Tuple<T, int> value)
+        {
+            return new PositionTagged<T>(value.Item1, value.Item2);
+        }
+
+        public static bool operator ==(PositionTagged<T> left, PositionTagged<T> right)
+        {
+            return object.Equals(left, right);
+        }
+
+        public static bool operator !=(PositionTagged<T> left, PositionTagged<T> right)
+        {
+            return !object.Equals(left, right);
+        }
+    }
+
+
+    public class AttributeValue
+    {
+
+        public PositionTagged<string> Prefix
+        {
+            get;
+            private set;
+        }
+
+        public PositionTagged<object> Value
+        {
+            get;
+            private set;
+        }
+
+        public bool Literal
+        {
+            get;
+            private set;
+        }
+
+        public AttributeValue(PositionTagged<string> prefix, PositionTagged<object> value, bool literal)
+        {
+            this.Prefix = prefix;
+            this.Value = value;
+            this.Literal = literal;
+        }
+
+        public static AttributeValue FromTuple(Tuple<Tuple<string, int>, Tuple<object, int>, bool> value)
+        {
+            return new AttributeValue(value.Item1, value.Item2, value.Item3);
+        }
+
+        public static AttributeValue FromTuple(Tuple<Tuple<string, int>, Tuple<string, int>, bool> value)
+        {
+            return new AttributeValue(value.Item1, new PositionTagged<object>(value.Item2.Item1, value.Item2.Item2), value.Item3);
+        }
+
+        public static implicit operator AttributeValue(Tuple<Tuple<string, int>, Tuple<object, int>, bool> value)
+        {
+            return AttributeValue.FromTuple(value);
+        }
+
+        public static implicit operator AttributeValue(Tuple<Tuple<string, int>, Tuple<string, int>, bool> value)
+        {
+            return AttributeValue.FromTuple(value);
+        }
+    }
+
+
     public class RazorTemplateBase : IDisposable
     {
         internal TextWriter writer;
@@ -601,16 +714,106 @@ namespace GenericRazor
 
         public void Write() { }
 
-        public virtual void Write(object value)
+        public void Write(object value)
         {
             if (this.writer != null)
-                writer.Write(value);
+                WriteTo(this.writer, value);
         }
 
-        public virtual void WriteLiteral(object value)
+        public virtual void WriteTo(TextWriter writer, object value)
+        {
+            if (writer == null)
+                throw new ArgumentNullException("writer");
+
+            if (value == null)
+                return;
+
+            writer.Write(value);
+        }
+
+        public void WriteAttribute(
+            string name,
+            PositionTagged<string> prefix,
+            PositionTagged<string> suffix,
+            params AttributeValue[] values)
         {
             if (this.writer != null)
-                writer.Write(value);
+                WriteAttributeTo(this.writer, name, prefix, suffix, values);
+        }
+
+        public virtual void WriteAttributeTo(
+            TextWriter writer,
+            string name,
+            PositionTagged<string> prefix,
+            PositionTagged<string> suffix,
+            params AttributeValue[] values)
+        {
+            bool writePrefix = true;
+            bool writeSuffix = false;
+
+            if (values.Length == 0)
+            {
+                this.WriteLiteralTo(writer, prefix.Value);
+                this.WriteLiteralTo(writer, suffix.Value);
+                return;
+            }
+
+            foreach (AttributeValue attributeValue in values)
+            {
+                PositionTagged<object> value = attributeValue.Value;
+
+                bool? boolValue = value.Value is bool
+                    ? new bool?((bool)value.Value)
+                    : null;
+
+                if (value.Value != null && (!boolValue.HasValue || boolValue.Value))
+                {
+                    // bool
+                    string strValue = value.Value as string ?? value.Value.ToString();
+                    if (boolValue.HasValue)
+                        strValue = name;
+
+                    // PREFIX
+                    if (writePrefix)
+                    {
+                        this.WriteLiteralTo(writer, prefix.Value);
+                        writePrefix = false;
+                    }
+                    else
+                        this.WriteLiteralTo(writer, attributeValue.Prefix.Value);
+
+                    // VALUE
+                    if (attributeValue.Literal)
+                        this.WriteLiteralTo(writer, strValue);
+                    else
+                        this.WriteTo(writer, strValue);
+
+                    writeSuffix = true;
+                }
+            }
+
+            // SUFFIX
+            if (writeSuffix)
+                this.WriteLiteralTo(writer, suffix.Value);
+        }
+
+        public void WriteLiteral(string value)
+        {
+            if (this.writer == null)
+                return;
+
+            WriteLiteralTo(this.writer, value);
+        }
+
+        public virtual void WriteLiteralTo(TextWriter writer, string literal)
+        {
+            if (writer == null)
+                throw new ArgumentNullException("writer");
+
+            if (literal == null)
+                return;
+
+            writer.Write(literal);
         }
 
         public virtual void Execute() { }
