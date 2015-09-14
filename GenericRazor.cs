@@ -56,7 +56,7 @@ You must understand and agree to the above terms before using this work.
     =====================================
     GenericRazor para .Net
     =====================================
-    Versão:      0.0.3
+    Versão:      0.0.4
     Criação:     2015-08-23
     Alteração:   2015-09-14
     
@@ -70,6 +70,9 @@ captura da saída.
 
 Alterações
 ----------
+» 0.0.4
+- Método RazorEngine<TTemplate>.GetBaseDirectory criado.
+
 » 0.0.3
 - Método RazorEngine<TTemplate>.Compile aceitando array de TextReader. O
   método que realmente compila o template é privado.
@@ -129,6 +132,11 @@ namespace GenericRazor
         /// <see cref="GenerateInMemory"/> for false.
         /// </summary>
         string TempPath { get; set; }
+
+        /// <summary>
+        /// Define o diretório que o RazorEngine usará como base.
+        /// </summary>
+        string BaseDirectory { get; set; }
     }
 
     /// <summary>
@@ -150,12 +158,15 @@ namespace GenericRazor
     {
         private sealed class TemplateKey : ITemplateKey
         {
-            public TemplateKey(Type templateType)
-            {
-                this.TemplateType = templateType;
-            }
+            internal string ClassName;
 
-            internal Type TemplateType { get; private set; }
+            internal bool IsDynamic;
+
+            internal string SourceFile;
+
+            internal Type TemplateType;
+
+            internal RazorEngine<TTemplate> Razor;
         }
 
         public IRazorEngineConfiguration Configuration { get; private set; }
@@ -279,6 +290,7 @@ namespace GenericRazor
 
             var debug = Configuration.Debug;
 
+            var keys = new TemplateKey[count];
             string[] sourceCode = debug ? new string[count] : null; //debug
 
             string guid = null;
@@ -312,13 +324,22 @@ namespace GenericRazor
             {
                 var input = inputs[i];
                 var file = files[i];
-                var className = "Template" + i.ToString("D", System.Globalization.CultureInfo.InvariantCulture);
+                file = file == null ? null : NormalizePath(file);
 
                 if (input == null)
                     if (file == null)
                         continue;
                     else
                         input = new StreamReader(file);
+
+                var className = "Template" + i.ToString("D", System.Globalization.CultureInfo.InvariantCulture);
+
+                var key = new TemplateKey()
+                {
+                    IsDynamic = file == null,
+                    ClassName = className,
+                    Razor = this
+                };
 
                 // debug
                 if (debug)
@@ -357,6 +378,8 @@ namespace GenericRazor
                     }
                 }
 
+                key.SourceFile = file;
+                keys[i] = key;
                 codeDom[i] = engine.GenerateCode(input, className, assemblyName, debug ? file : null).GeneratedCode;
             }
 
@@ -440,21 +463,19 @@ namespace GenericRazor
 
             Assembly assembly = compilerResults.CompiledAssembly;
 
-            var keys = new ITemplateKey[count];
-
-            for (int i = 0; i < count; i++)
-                keys[i] = new TemplateKey(assembly.GetType(assemblyName + ".Template" + i.ToString("D", System.Globalization.CultureInfo.InvariantCulture)));
+            foreach (TemplateKey key in keys)
+                key.TemplateType = assembly.GetType(assemblyName + '.' + key.ClassName);
 
             return keys;
         }
 
-        private static string NormalizePath(string path)
+        private string NormalizePath(string path)
         {
             if (!Path.IsPathRooted(path))
-                path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, path);
+                path = Path.Combine(Configuration.BaseDirectory, path);
 
             var root = new Uri(new Uri(Path.GetPathRoot(path)).LocalPath.ToUpperInvariant());
-            return new Uri(root, root.MakeRelativeUri(new Uri(path))).LocalPath;
+            return Uri.UnescapeDataString(new Uri(root, root.MakeRelativeUri(new Uri(path))).LocalPath);
         }
 
         public void Run(ITemplateKey key, TextWriter output)
@@ -540,8 +561,12 @@ namespace GenericRazor
                 );
             }
 
+            OnCreateTemplate(key, template, args);
+
             return template;
         }
+
+        protected virtual void OnCreateTemplate(ITemplateKey key, TTemplate template, params object[] args) { }
 
         private void ExecuteTemplate(TTemplate template, TextWriter output, params object[] args)
         {
@@ -559,6 +584,32 @@ namespace GenericRazor
                 throw new InvalidOperationException(Resources.NoCompatibleExecuteMethodFound);
 
             execute.Invoke(template, args);
+        }
+
+        public string GetBaseDirectory(ITemplateKey key)
+        {
+            var internalKey = GetInternalKey(key);
+
+            if (internalKey.IsDynamic)
+                return AppDomain.CurrentDomain.BaseDirectory;
+
+            return Path.GetFullPath(Path.Combine(internalKey.SourceFile, ".."));
+        }
+
+        private TemplateKey GetInternalKey(ITemplateKey key)
+        {
+            var internalKey = key as TemplateKey;
+            
+            if (internalKey == null)
+                if(key == null)
+                    throw new ArgumentNullException("key");
+                else
+                    throw new RazorException(Resources.CompiledTemplateNotFound);
+
+            if (internalKey.Razor != this)
+                throw new RazorException(Resources.CompiledTemplateNotFound);
+
+            return internalKey;
         }
     }
 
@@ -605,6 +656,21 @@ namespace GenericRazor
             }
         }
         private string tempPath = null;
+
+        public string BaseDirectory
+        {
+            get
+            {
+                return baseDirectory ?? AppDomain.CurrentDomain.BaseDirectory;
+            }
+            set
+            {
+                if (value != null && !Path.IsPathRooted(value))
+                    value = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, value);
+                baseDirectory = value;
+            }
+        }
+        private string baseDirectory = null;
     }
 
     [System.Diagnostics.DebuggerDisplay("({Position})\"{Value}\"")]
