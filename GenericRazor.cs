@@ -10,8 +10,8 @@ publicação, bem como a aplicação em outros trabalhos derivados deste.
 A mensagem de direito autoral:
     GenericRazor para .Net
     Copyright (c) 2015 Primos Tecnologia da Informação Ltda.
-deverá ser incluída em todas as cópias ou partes do obra derivado que permitam
-a inclusão desta informação.
+deverá ser incluída em todas as cópias ou partes da obra derivada, em local
+que permita a inclusão desta informação.
 
 O autor desta obra poderá alterar as condições de licenciamento em versões
 futuras, porém, tais alterações serão vigentes somente a partir da versão
@@ -56,9 +56,9 @@ You must understand and agree to the above terms before using this work.
     =====================================
     GenericRazor para .Net
     =====================================
-    Versão:      0.0.2
+    Versão:      0.0.3
     Criação:     2015-08-23
-    Alteração:   2015-09-10
+    Alteração:   2015-09-14
     
     Escrito por: Rodrigo Speller
     E-mail:      rspeller@primosti.com.br
@@ -70,6 +70,15 @@ captura da saída.
 
 Alterações
 ----------
+» 0.0.3
+- Método RazorEngine<TTemplate>.Compile aceitando array de TextReader. O
+  método que realmente compila o template é privado.
+- A classe RazorTemplateBase foi renomeada para TemplateBase.
+- O método OnCreateTemplate foi removido da classe RazorEngine<TTemplate>,
+  a passagem de parâmetros para o template é realizado através de sobrecarga do
+  do método Execute no próprio template.
+- Algumas pequanas melhorias sem alterações expressivas.
+
 » 0.0.2
 - Passagem de argumentos para o Template.
 - Implementação dos métodos WriteAttribute e WriteToAttribute no Template.
@@ -133,13 +142,21 @@ namespace GenericRazor
     /// Classe principal para a execução dos modelos.
     /// </summary>
     /// <typeparam name="TTemplate">
-    /// Um tipo derivado de <see cref="RazorTemplateBase"/> que determina o tipo
-    /// de template que a instância do RazorEngine irá manipular.
+    /// Um tipo derivado de <see cref="TemplateBase"/> que determina o tipo de
+    /// template que a instância do RazorEngine irá manipular.
     /// </typeparam>
     public class RazorEngine<TTemplate>
-        where TTemplate : RazorTemplateBase, new()
+        where TTemplate : TemplateBase, new()
     {
-        private sealed class TemplateKey : ITemplateKey { }
+        private sealed class TemplateKey : ITemplateKey
+        {
+            public TemplateKey(Type templateType)
+            {
+                this.TemplateType = templateType;
+            }
+
+            internal Type TemplateType { get; private set; }
+        }
 
         public IRazorEngineConfiguration Configuration { get; private set; }
 
@@ -153,8 +170,6 @@ namespace GenericRazor
         /// </summary>
         public List<string> ReferencedAssemblies { get; private set; }
 
-        protected Dictionary<ITemplateKey, Type> TemplateCache { get; private set; }
-
         public RazorEngine() : this(new RazorEngineConfiguration()) { }
 
         public RazorEngine(IRazorEngineConfiguration configuration)
@@ -163,8 +178,6 @@ namespace GenericRazor
                 configuration = new RazorEngineConfiguration();
 
             Configuration = configuration;
-
-            TemplateCache = new Dictionary<ITemplateKey, Type>();
 
             // namespaces precarregadas
             NamespaceImports = new List<string>() { 
@@ -211,6 +224,11 @@ namespace GenericRazor
             return Compile(new TextReader[] { input }, null as string[])[0];
         }
 
+        public ITemplateKey Compile(params TextReader[] input)
+        {
+            return Compile(input, null as string[])[0];
+        }
+
         public ITemplateKey Compile(string file)
         {
             return Compile(null as TextReader[], new string[] { file })[0];
@@ -227,7 +245,7 @@ namespace GenericRazor
             return Compile(null as TextReader[], files);
         }
 
-        public ITemplateKey[] Compile(TextReader[] inputs, string[] files)
+        private ITemplateKey[] Compile(TextReader[] inputs, string[] files)
         {
             // ARGS
 
@@ -294,7 +312,7 @@ namespace GenericRazor
             {
                 var input = inputs[i];
                 var file = files[i];
-                var className = "Template" + i.ToString("D");
+                var className = "Template" + i.ToString("D", System.Globalization.CultureInfo.InvariantCulture);
 
                 if (input == null)
                     if (file == null)
@@ -425,12 +443,7 @@ namespace GenericRazor
             var keys = new ITemplateKey[count];
 
             for (int i = 0; i < count; i++)
-            {
-                var key = new TemplateKey();
-                keys[i] = key;
-
-                TemplateCache.Add(key, assembly.GetType(assemblyName + ".Template" + i.ToString("D")));
-            }
+                keys[i] = new TemplateKey(assembly.GetType(assemblyName + ".Template" + i.ToString("D", System.Globalization.CultureInfo.InvariantCulture)));
 
             return keys;
         }
@@ -456,17 +469,15 @@ namespace GenericRazor
 
             using (TTemplate template = CreateTemplate(key, args))
             {
-                template.writer = output;
-
                 if (Configuration.Debug)
                 {
-                    ExecuteTemplate(template);
+                    ExecuteTemplate(template, output, args);
                 }
                 else
                 {
                     try
                     {
-                        ExecuteTemplate(template);
+                        ExecuteTemplate(template, output, args);
                     }
                     catch (Exception ex)
                     {
@@ -508,12 +519,12 @@ namespace GenericRazor
 
         private TTemplate CreateTemplate(ITemplateKey key, params object[] args)
         {
-            Type templateType = null;
-
-            if (!TemplateCache.TryGetValue(key, out templateType) || templateType == null)
+            if (!(key is TemplateKey))
                 throw new RazorException(Resources.CompiledTemplateNotFound);
 
-            TTemplate template = null;
+            Type templateType = ((TemplateKey)key).TemplateType;
+
+            TTemplate template = default(TTemplate);
             try
             {
                 template = (TTemplate)Activator.CreateInstance(templateType);
@@ -524,30 +535,30 @@ namespace GenericRazor
                     this,
                     key,
                     templateType,
-                    null,
+                    string.Format(Resources.TemplateInstanceError, Resources.UnableToCreateTemplate),
                     ex
                 );
             }
 
-            if (template == null)
-                throw new RazorTemplateCreationException<TTemplate>(
-                    this,
-                    key,
-                    templateType,
-                    string.Format(Resources.TemplateInstanceError, Resources.UnableToCreateTemplate),
-                    null
-                );
-
-            OnCreateTemplate(template, args);
-
             return template;
         }
 
-        protected virtual void OnCreateTemplate(TTemplate template, params object[] args) { }
-
-        private void ExecuteTemplate(TTemplate template)
+        private void ExecuteTemplate(TTemplate template, TextWriter output, params object[] args)
         {
-            template.Execute();
+            template.writer = output;
+
+            if (args == null)
+            {
+                template.Execute();
+                return;
+            }
+
+            var execute = template.GetType().GetMethod("Execute", args.Select(x => x.GetType()).ToArray());
+
+            if (execute == null)
+                throw new InvalidOperationException(Resources.NoCompatibleExecuteMethodFound);
+
+            execute.Invoke(template, args);
         }
     }
 
@@ -588,7 +599,6 @@ namespace GenericRazor
             }
             set
             {
-
                 if (!string.IsNullOrEmpty(value))
                     value = null;
                 tempPath = value;
@@ -650,7 +660,6 @@ namespace GenericRazor
         }
     }
 
-
     public class AttributeValue
     {
 
@@ -700,14 +709,13 @@ namespace GenericRazor
         }
     }
 
-
-    public class RazorTemplateBase : IDisposable
+    public class TemplateBase : IDisposable
     {
         internal TextWriter writer;
 
-        public RazorTemplateBase() { }
+        public TemplateBase() { }
 
-        public RazorTemplateBase(TextWriter writer)
+        public TemplateBase(TextWriter writer)
         {
             this.writer = writer;
         }
@@ -824,7 +832,7 @@ namespace GenericRazor
     public static class RazorStringExtension
     {
         public static ITemplateKey CompileString<TTemplate>(this RazorEngine<TTemplate> engine, string source)
-            where TTemplate : RazorTemplateBase, new()
+            where TTemplate : TemplateBase, new()
         {
             //TODO: cache
             using (var reader = new StringReader(source))
@@ -832,7 +840,7 @@ namespace GenericRazor
         }
 
         public static string RunToString<TTemplate>(this RazorEngine<TTemplate> engine, ITemplateKey key)
-            where TTemplate : RazorTemplateBase, new()
+            where TTemplate : TemplateBase, new()
         {
             using (var writer = new StringWriter())
             {
@@ -842,7 +850,7 @@ namespace GenericRazor
         }
 
         public static string CompileRunString<TTemplate>(this RazorEngine<TTemplate> engine, string source)
-            where TTemplate : RazorTemplateBase, new()
+            where TTemplate : TemplateBase, new()
         {
             return engine.RunToString(engine.CompileString(source));
         }
@@ -879,7 +887,7 @@ namespace GenericRazor
     }
 
     public class RazorTemplateExecutionException<TTemplate> : RazorException
-        where TTemplate : RazorTemplateBase, new()
+        where TTemplate : TemplateBase, new()
     {
         public RazorTemplateExecutionException(RazorEngine<TTemplate> engine, ITemplateKey key, TTemplate template, string message, Exception innerException)
             : base(message, innerException)
@@ -913,7 +921,7 @@ namespace GenericRazor
     }
 
     public class RazorTemplateCreationException<TTemplate> : RazorException
-            where TTemplate : RazorTemplateBase, new()
+            where TTemplate : TemplateBase, new()
     {
         public RazorTemplateCreationException(RazorEngine<TTemplate> engine, ITemplateKey key, Type templateType, string message, Exception innerException)
             : base(message, innerException)
@@ -947,7 +955,7 @@ namespace GenericRazor
     }
 
     public class RazorTemplateCompileException<TTemplate> : RazorException
-        where TTemplate : RazorTemplateBase, new()
+        where TTemplate : TemplateBase, new()
     {
 
         public RazorTemplateCompileException(RazorEngine<TTemplate> engine, string message, Exception innerException)
@@ -976,7 +984,7 @@ namespace GenericRazor
     }
 
     public class RazorDebuggableTemplateCompileException<TTemplate> : RazorTemplateCompileException<TTemplate>
-        where TTemplate : RazorTemplateBase, new()
+        where TTemplate : TemplateBase, new()
     {
         public RazorDebuggableTemplateCompileException(RazorEngine<TTemplate> engine, IReadOnlyList<RazorTemplateCompileInfo> entries, string message, Exception innerException)
             : base(engine, message, innerException)
@@ -1088,5 +1096,10 @@ namespace GenericRazor
         /// Unspecified error.
         /// </summary>
         public const string UnspecifiedError = @"Unspecified error.";
+
+        /// <summary>
+        /// No method compatible with passed arguments was found.
+        /// </summary>
+        public const string NoCompatibleExecuteMethodFound = @"No method compatible with passed arguments was found.";
     }
 }
